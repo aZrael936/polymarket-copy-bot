@@ -13,16 +13,25 @@ const isValidEthereumAddress = (address: string): boolean => {
  * Validate required environment variables
  */
 const validateRequiredEnv = (): void => {
+    const isPaperTrading = process.env.PAPER_TRADING_ENABLED === 'true';
+
+    // Base required vars for both modes
     const required = [
         'USER_ADDRESSES',
-        'PROXY_WALLET',
-        'PRIVATE_KEY',
         'CLOB_HTTP_URL',
         'CLOB_WS_URL',
         'MONGO_URI',
-        'RPC_URL',
-        'USDC_CONTRACT_ADDRESS',
     ];
+
+    // Additional vars required only for real trading
+    if (!isPaperTrading) {
+        required.push(
+            'PROXY_WALLET',
+            'PRIVATE_KEY',
+            'RPC_URL',
+            'USDC_CONTRACT_ADDRESS'
+        );
+    }
 
     const missing: string[] = [];
     for (const key of required) {
@@ -34,6 +43,9 @@ const validateRequiredEnv = (): void => {
     if (missing.length > 0) {
         console.error('\n❌ Configuration Error: Missing required environment variables\n');
         console.error(`Missing variables: ${missing.join(', ')}\n`);
+        if (isPaperTrading) {
+            console.error('📝 Paper trading mode requires fewer variables.');
+        }
         console.error('🔧 Quick fix:');
         console.error('   1. Run the setup wizard: npm run setup');
         console.error('   2. Or manually create .env file with all required variables\n');
@@ -48,7 +60,10 @@ const validateRequiredEnv = (): void => {
  * Validate Ethereum addresses
  */
 const validateAddresses = (): void => {
-    if (process.env.PROXY_WALLET && !isValidEthereumAddress(process.env.PROXY_WALLET)) {
+    const isPaperTrading = process.env.PAPER_TRADING_ENABLED === 'true';
+
+    // Only validate PROXY_WALLET if not in paper trading mode or if it's provided
+    if (!isPaperTrading && process.env.PROXY_WALLET && !isValidEthereumAddress(process.env.PROXY_WALLET)) {
         console.error('\n❌ Invalid Wallet Address\n');
         console.error(`Your PROXY_WALLET: ${process.env.PROXY_WALLET}`);
         console.error('Expected format:    0x followed by 40 hexadecimal characters\n');
@@ -63,6 +78,7 @@ const validateAddresses = (): void => {
     }
 
     if (
+        !isPaperTrading &&
         process.env.USDC_CONTRACT_ADDRESS &&
         !isValidEthereumAddress(process.env.USDC_CONTRACT_ADDRESS)
     ) {
@@ -348,4 +364,7 @@ export const ENV = {
     MONGO_URI: process.env.MONGO_URI as string,
     RPC_URL: process.env.RPC_URL as string,
     USDC_CONTRACT_ADDRESS: process.env.USDC_CONTRACT_ADDRESS as string,
+    // Paper trading settings
+    PAPER_TRADING_ENABLED: process.env.PAPER_TRADING_ENABLED === 'true',
+    PAPER_INITIAL_BALANCE: parseFloat(process.env.PAPER_INITIAL_BALANCE || '1000'),
 };
