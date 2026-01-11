@@ -16,6 +16,10 @@
 
 import connectDB, { closeDB } from '../config/db';
 import { PaperTrade, PaperPosition } from '../models/paperTrades';
+import fetchData from '../utils/fetchData';
+
+// Polygonscan base URL for transaction links
+const POLYGONSCAN_TX_URL = 'https://polygonscan.com/tx/';
 
 const colors = {
     reset: '\x1b[0m',
@@ -43,6 +47,26 @@ const formatTxHash = (hash: string | undefined): string => {
     if (!hash) return 'N/A';
     if (hash.length <= 12) return hash;
     return `${hash.slice(0, 8)}...${hash.slice(-6)}`;
+};
+
+const formatTxLink = (hash: string | undefined): string => {
+    if (!hash) return 'N/A';
+    return `${POLYGONSCAN_TX_URL}${hash}`;
+};
+
+/**
+ * Fetch current price for an asset from Polymarket API
+ */
+const fetchCurrentPrice = async (asset: string): Promise<number | null> => {
+    try {
+        const priceData = await fetchData(`https://clob.polymarket.com/price?token_id=${asset}&side=sell`);
+        if (priceData && typeof priceData.price === 'string') {
+            return parseFloat(priceData.price);
+        }
+        return null;
+    } catch {
+        return null;
+    }
 };
 
 const listAllPositions = async () => {
@@ -139,9 +163,22 @@ const tracePosition = async (searchTerm: string) => {
         console.log(`  Realized P&L: ${realizedColor}${realizedSign}$${position.realizedPnl.toFixed(2)}${colors.reset}`);
 
         if (position.size > 0) {
-            const unrealizedColor = position.unrealizedPnl >= 0 ? colors.green : colors.red;
-            const unrealizedSign = position.unrealizedPnl >= 0 ? '+' : '';
-            console.log(`  Unrealized:   ${unrealizedColor}${unrealizedSign}$${position.unrealizedPnl.toFixed(2)}${colors.reset}`);
+            // Fetch LIVE current price for accurate unrealized P&L
+            const currentPrice = await fetchCurrentPrice(position.asset);
+            if (currentPrice !== null) {
+                const currentValue = position.size * currentPrice;
+                const costBasis = position.size * position.avgPrice;
+                const unrealizedPnl = currentValue - costBasis;
+                const unrealizedPct = costBasis > 0 ? ((unrealizedPnl / costBasis) * 100) : 0;
+
+                const unrealizedColor = unrealizedPnl >= 0 ? colors.green : colors.red;
+                const unrealizedSign = unrealizedPnl >= 0 ? '+' : '';
+                console.log(`  Current:      $${currentPrice.toFixed(4)}`);
+                console.log(`  Value:        ${formatCurrency(currentValue)}`);
+                console.log(`  Unrealized:   ${unrealizedColor}${unrealizedSign}$${unrealizedPnl.toFixed(2)} (${unrealizedSign}${unrealizedPct.toFixed(2)}%)${colors.reset}`);
+            } else {
+                console.log(`  ${colors.yellow}(Unable to fetch current price)${colors.reset}`);
+            }
         }
     }
 
@@ -179,6 +216,9 @@ const tracePosition = async (searchTerm: string) => {
             );
             console.log(`  Trader:    ${formatAddress(trade.traderAddress)} (${formatCurrency(trade.traderUsdcSize)} @ $${trade.traderPrice.toFixed(4)})`);
             console.log(`  TX Hash:   ${colors.dim}${formatTxHash(trade.originalTxHash)}${colors.reset}`);
+            if (trade.originalTxHash) {
+                console.log(`  TX Link:   ${colors.cyan}${formatTxLink(trade.originalTxHash)}${colors.reset}`);
+            }
             console.log(`  Position:  ${runningTokens.toFixed(2)} tokens (${formatCurrency(runningCost)} invested)`);
 
             if (trade.orderReasoning) {
