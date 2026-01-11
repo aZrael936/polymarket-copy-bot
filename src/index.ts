@@ -3,11 +3,13 @@ import { ENV } from './config/env';
 import createClobClient from './utils/createClobClient';
 import tradeExecutor, { stopTradeExecutor } from './services/tradeExecutor';
 import tradeMonitor, { stopTradeMonitor } from './services/tradeMonitor';
+import paperTradeExecutor, { stopPaperTradeExecutor } from './services/paperTradeExecutor';
 import Logger from './utils/logger';
 import { performHealthCheck, logHealthCheck } from './utils/healthCheck';
 
 const USER_ADDRESSES = ENV.USER_ADDRESSES;
 const PROXY_WALLET = ENV.PROXY_WALLET;
+const PAPER_TRADING_ENABLED = ENV.PAPER_TRADING_ENABLED;
 
 // Graceful shutdown handler
 let isShuttingDown = false;
@@ -25,7 +27,11 @@ const gracefulShutdown = async (signal: string) => {
     try {
         // Stop services
         stopTradeMonitor();
-        stopTradeExecutor();
+        if (PAPER_TRADING_ENABLED) {
+            stopPaperTradeExecutor();
+        } else {
+            stopTradeExecutor();
+        }
 
         // Give services time to finish current operations
         Logger.info('Waiting for services to finish current operations...');
@@ -68,34 +74,55 @@ export const main = async () => {
             reset: '\x1b[0m',
             yellow: '\x1b[33m',
             cyan: '\x1b[36m',
+            magenta: '\x1b[35m',
         };
-        
-        console.log(`\n${colors.yellow}💡 First time running the bot?${colors.reset}`);
-        console.log(`   Read the guide: ${colors.cyan}GETTING_STARTED.md${colors.reset}`);
-        console.log(`   Run health check: ${colors.cyan}npm run health-check${colors.reset}\n`);
-        
-        await connectDB();
-        Logger.startup(USER_ADDRESSES, PROXY_WALLET);
 
-        // Perform initial health check
-        Logger.info('Performing initial health check...');
-        const healthResult = await performHealthCheck();
-        logHealthCheck(healthResult);
-
-        if (!healthResult.healthy) {
-            Logger.warning('Health check failed, but continuing startup...');
+        if (PAPER_TRADING_ENABLED) {
+            console.log(`\n${colors.magenta}===========================================${colors.reset}`);
+            console.log(`${colors.magenta}           PAPER TRADING MODE${colors.reset}`);
+            console.log(`${colors.magenta}    No real trades will be executed${colors.reset}`);
+            console.log(`${colors.magenta}===========================================${colors.reset}\n`);
+        } else {
+            console.log(`\n${colors.yellow}💡 First time running the bot?${colors.reset}`);
+            console.log(`   Read the guide: ${colors.cyan}GETTING_STARTED.md${colors.reset}`);
+            console.log(`   Run health check: ${colors.cyan}npm run health-check${colors.reset}\n`);
         }
 
-        Logger.info('Initializing CLOB client...');
-        const clobClient = await createClobClient();
-        Logger.success('CLOB client ready');
+        await connectDB();
+        Logger.startup(USER_ADDRESSES, PAPER_TRADING_ENABLED ? 'PAPER_TRADING' : PROXY_WALLET);
 
-        Logger.separator();
-        Logger.info('Starting trade monitor...');
-        tradeMonitor();
+        if (PAPER_TRADING_ENABLED) {
+            // Paper trading mode - no CLOB client needed
+            Logger.info('[PAPER] Skipping CLOB client initialization (not needed for paper trading)');
+            Logger.separator();
 
-        Logger.info('Starting trade executor...');
-        tradeExecutor(clobClient);
+            Logger.info('Starting trade monitor...');
+            tradeMonitor();
+
+            Logger.info('[PAPER] Starting paper trade executor...');
+            paperTradeExecutor();
+        } else {
+            // Real trading mode
+            // Perform initial health check
+            Logger.info('Performing initial health check...');
+            const healthResult = await performHealthCheck();
+            logHealthCheck(healthResult);
+
+            if (!healthResult.healthy) {
+                Logger.warning('Health check failed, but continuing startup...');
+            }
+
+            Logger.info('Initializing CLOB client...');
+            const clobClient = await createClobClient();
+            Logger.success('CLOB client ready');
+
+            Logger.separator();
+            Logger.info('Starting trade monitor...');
+            tradeMonitor();
+
+            Logger.info('Starting trade executor...');
+            tradeExecutor(clobClient);
+        }
 
         // test(clobClient);
     } catch (error) {

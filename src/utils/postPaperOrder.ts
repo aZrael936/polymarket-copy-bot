@@ -1,0 +1,441 @@
+import axios from 'axios';
+import { ENV } from '../config/env';
+import { UserActivityInterface } from '../interfaces/User';
+import { getUserActivityModel } from '../models/userHistory';
+import {
+    PaperTrade,
+    PaperPosition,
+    PaperPortfolioStats,
+    updatePaperPosition,
+    getOrCreatePortfolioStats,
+} from '../models/paperTrades';
+import Logger from './logger';
+import { calculateOrderSize, getTradeMultiplier } from '../config/copyStrategy';
+
+const COPY_STRATEGY_CONFIG = ENV.COPY_STRATEGY_CONFIG;
+const CLOB_HTTP_URL = ENV.CLOB_HTTP_URL;
+const PAPER_INITIAL_BALANCE = ENV.PAPER_INITIAL_BALANCE;
+
+// Polymarket minimum order sizes
+const MIN_ORDER_SIZE_USD = 1.0;
+const MIN_ORDER_SIZE_TOKENS = 1.0;
+
+interface OrderBook {
+    asks: Array<{ price: string; size: string }>;
+    bids: Array<{ price: string; size: string }>;
+}
+
+/**
+ * Fetch order book data from Polymarket CLOB API
+ */
+const fetchOrderBook = async (tokenId: string): Promise<OrderBook | null> => {
+    try {
+        const response = await axios.get(`${CLOB_HTTP_URL}/book`, {
+            params: { token_id: tokenId },
+            timeout: ENV.REQUEST_TIMEOUT_MS,
+        });
+        return response.data;
+    } catch (error) {
+        Logger.warning(`Failed to fetch order book for ${tokenId}`);
+        return null;
+    }
+};
+
+/**
+ * Get current paper trading balance
+ */
+const getPaperBalance = async (): Promise<number> => {
+    const stats = await getOrCreatePortfolioStats(PAPER_INITIAL_BALANCE);
+    return stats.currentBalance;
+};
+
+/**
+ * Get current paper position for a market
+ */
+const getPaperPosition = async (conditionId: string) => {
+    return await PaperPosition.findOne({ conditionId });
+};
+
+/**
+ * Record a paper trade and update positions/stats
+ */
+const recordPaperTrade = async (
+    trade: UserActivityInterface,
+    userAddress: string,
+    side: 'BUY' | 'SELL',
+    simulatedSize: number,
+    simulatedTokens: number,
+    simulatedPrice: number,
+    orderReasoning: string,
+    orderBookData: { bestAsk?: number; bestBid?: number }
+) => {
+    const now = Date.now();
+
+    // Create paper trade record
+    await PaperTrade.create({
+        originalTradeId: trade._id,
+        traderAddress: userAddress,
+        conditionId: trade.conditionId,
+        asset: trade.asset,
+        side,
+        simulatedSize,
+        simulatedTokens,
+        simulatedPrice,
+        timestamp: now,
+        marketTitle: trade.title,
+        marketSlug: trade.slug,
+        outcome: trade.outcome,
+        outcomeIndex: trade.outcomeIndex,
+        orderReasoning,
+        bestAsk: orderBookData.bestAsk,
+        bestBid: orderBookData.bestBid,
+        traderUsdcSize: trade.usdcSize,
+        traderPrice: trade.price,
+        skipped: false,
+    });
+
+    // Update paper position
+    const { realizedPnl } = await updatePaperPosition(
+        trade.conditionId,
+        trade.asset,
+        side,
+        simulatedTokens,
+        simulatedPrice,
+        simulatedSize,
+        {
+            marketTitle: trade.title,
+            marketSlug: trade.slug,
+            outcome: trade.outcome,
+            outcomeIndex: trade.outcomeIndex,
+        }
+    );
+
+    // Update portfolio stats
+    const stats = await getOrCreatePortfolioStats(PAPER_INITIAL_BALANCE);
+
+    if (side === 'BUY') {
+        stats.currentBalance -= simulatedSize;
+        stats.totalBuys += 1;
+    } else {
+        stats.currentBalance += simulatedSize;
+        stats.totalSells += 1;
+
+        // Track winning/losing trades
+        if (realizedPnl > 0) {
+            stats.winningTrades += 1;
+        } else if (realizedPnl < 0) {
+            stats.losingTrades += 1;
+        }
+        stats.totalRealizedPnl += realizedPnl;
+    }
+
+    stats.totalTrades += 1;
+    stats.totalVolumeTraded += simulatedSize;
+    stats.winRate =
+        stats.totalSells > 0
+            ? (stats.winningTrades / stats.totalSells) * 100
+            : 0;
+    stats.lastUpdateAt = now;
+
+    await stats.save();
+
+    return { realizedPnl };
+};
+
+/**
+ * Record a skipped paper trade
+ */
+const recordSkippedTrade = async (
+    trade: UserActivityInterface,
+    userAddress: string,
+    side: 'BUY' | 'SELL',
+    skipReason: string
+) => {
+    await PaperTrade.create({
+        originalTradeId: trade._id,
+        traderAddress: userAddress,
+        conditionId: trade.conditionId,
+        asset: trade.asset,
+        side,
+        simulatedSize: 0,
+        simulatedTokens: 0,
+        simulatedPrice: trade.price,
+        timestamp: Date.now(),
+        marketTitle: trade.title,
+        marketSlug: trade.slug,
+        outcome: trade.outcome,
+        outcomeIndex: trade.outcomeIndex,
+        orderReasoning: skipReason,
+        traderUsdcSize: trade.usdcSize,
+        traderPrice: trade.price,
+        skipped: true,
+        skipReason,
+    });
+};
+
+/**
+ * Simulate a paper trade (no actual execution)
+ */
+const postPaperOrder = async (
+    condition: string,
+    trade: UserActivityInterface,
+    userAddress: string
+) => {
+    const UserActivity = getUserActivityModel(userAddress);
+
+    if (condition === 'buy') {
+        Logger.info('[PAPER] Simulating BUY strategy...');
+
+        // Get paper balance
+        const paperBalance = await getPaperBalance();
+        Logger.info(`[PAPER] Your simulated balance: $${paperBalance.toFixed(2)}`);
+        Logger.info(`[PAPER] Trader bought: $${trade.usdcSize.toFixed(2)}`);
+
+        // Get current paper position for position limit checks
+        const paperPosition = await getPaperPosition(trade.conditionId);
+        const currentPositionValue = paperPosition
+            ? paperPosition.size * paperPosition.avgPrice
+            : 0;
+
+        // Calculate order size using the same strategy as real trading
+        const orderCalc = calculateOrderSize(
+            COPY_STRATEGY_CONFIG,
+            trade.usdcSize,
+            paperBalance,
+            currentPositionValue
+        );
+
+        Logger.info(`[PAPER] ${orderCalc.reasoning}`);
+
+        // Check if order should be executed
+        if (orderCalc.finalAmount === 0) {
+            Logger.warning(`[PAPER] Cannot execute: ${orderCalc.reasoning}`);
+            await recordSkippedTrade(trade, userAddress, 'BUY', orderCalc.reasoning);
+            await UserActivity.updateOne({ _id: trade._id }, { bot: true });
+            return;
+        }
+
+        // Fetch order book to get realistic price
+        const orderBook = await fetchOrderBook(trade.asset);
+        if (!orderBook || !orderBook.asks || orderBook.asks.length === 0) {
+            Logger.warning('[PAPER] No asks available in order book');
+            await recordSkippedTrade(trade, userAddress, 'BUY', 'No asks in order book');
+            await UserActivity.updateOne({ _id: trade._id }, { bot: true });
+            return;
+        }
+
+        const minPriceAsk = orderBook.asks.reduce((min, ask) => {
+            return parseFloat(ask.price) < parseFloat(min.price) ? ask : min;
+        }, orderBook.asks[0]);
+
+        const bestAskPrice = parseFloat(minPriceAsk.price);
+        Logger.info(`[PAPER] Best ask: ${minPriceAsk.size} @ $${bestAskPrice.toFixed(4)}`);
+
+        // Check slippage
+        if (bestAskPrice - 0.05 > trade.price) {
+            Logger.warning('[PAPER] Price slippage too high - skipping trade');
+            await recordSkippedTrade(
+                trade,
+                userAddress,
+                'BUY',
+                `Slippage too high: ask $${bestAskPrice.toFixed(4)} vs trader $${trade.price.toFixed(4)}`
+            );
+            await UserActivity.updateOne({ _id: trade._id }, { bot: true });
+            return;
+        }
+
+        // Simulate the purchase
+        const simulatedTokens = orderCalc.finalAmount / bestAskPrice;
+
+        Logger.orderResult(
+            true,
+            `[PAPER] Would buy $${orderCalc.finalAmount.toFixed(2)} at $${bestAskPrice.toFixed(4)} (${simulatedTokens.toFixed(2)} tokens)`
+        );
+
+        // Record the paper trade
+        await recordPaperTrade(
+            trade,
+            userAddress,
+            'BUY',
+            orderCalc.finalAmount,
+            simulatedTokens,
+            bestAskPrice,
+            orderCalc.reasoning,
+            { bestAsk: bestAskPrice }
+        );
+
+        // Mark original trade as processed
+        await UserActivity.updateOne({ _id: trade._id }, { bot: true });
+    } else if (condition === 'sell') {
+        Logger.info('[PAPER] Simulating SELL strategy...');
+
+        // Get paper position
+        const paperPosition = await getPaperPosition(trade.conditionId);
+
+        if (!paperPosition || paperPosition.size <= 0) {
+            Logger.warning('[PAPER] No position to sell');
+            await recordSkippedTrade(trade, userAddress, 'SELL', 'No position to sell');
+            await UserActivity.updateOne({ _id: trade._id }, { bot: true });
+            return;
+        }
+
+        Logger.info(
+            `[PAPER] Your simulated position: ${paperPosition.size.toFixed(2)} tokens @ avg $${paperPosition.avgPrice.toFixed(4)}`
+        );
+
+        // Get previous paper buys for this asset
+        const previousPaperBuys = await PaperTrade.find({
+            conditionId: trade.conditionId,
+            side: 'BUY',
+            skipped: false,
+        }).exec();
+
+        const totalBoughtTokens = previousPaperBuys.reduce(
+            (sum, buy) => sum + (buy.simulatedTokens || 0),
+            0
+        );
+
+        let sellTokens: number;
+
+        // Calculate sell amount based on trader's sell percentage
+        const traderSellPercent = trade.size / (trade.size + (paperPosition.size || 0));
+
+        if (totalBoughtTokens > 0) {
+            sellTokens = totalBoughtTokens * traderSellPercent;
+            Logger.info(
+                `[PAPER] Calculating from tracked purchases: ${totalBoughtTokens.toFixed(2)} x ${(traderSellPercent * 100).toFixed(2)}% = ${sellTokens.toFixed(2)} tokens`
+            );
+        } else {
+            sellTokens = paperPosition.size * traderSellPercent;
+            Logger.info(
+                `[PAPER] Using position size: ${paperPosition.size.toFixed(2)} x ${(traderSellPercent * 100).toFixed(2)}% = ${sellTokens.toFixed(2)} tokens`
+            );
+        }
+
+        // Apply multiplier
+        const multiplier = getTradeMultiplier(COPY_STRATEGY_CONFIG, trade.usdcSize);
+        sellTokens = sellTokens * multiplier;
+
+        if (multiplier !== 1.0) {
+            Logger.info(`[PAPER] Applying ${multiplier}x multiplier`);
+        }
+
+        // Check minimum
+        if (sellTokens < MIN_ORDER_SIZE_TOKENS) {
+            Logger.warning(
+                `[PAPER] Sell amount ${sellTokens.toFixed(2)} tokens below minimum`
+            );
+            await recordSkippedTrade(
+                trade,
+                userAddress,
+                'SELL',
+                `Sell amount ${sellTokens.toFixed(2)} below minimum ${MIN_ORDER_SIZE_TOKENS}`
+            );
+            await UserActivity.updateOne({ _id: trade._id }, { bot: true });
+            return;
+        }
+
+        // Cap to available position
+        if (sellTokens > paperPosition.size) {
+            Logger.warning(
+                `[PAPER] Capping sell to available position: ${paperPosition.size.toFixed(2)} tokens`
+            );
+            sellTokens = paperPosition.size;
+        }
+
+        // Fetch order book to get realistic price
+        const orderBook = await fetchOrderBook(trade.asset);
+        if (!orderBook || !orderBook.bids || orderBook.bids.length === 0) {
+            Logger.warning('[PAPER] No bids available in order book');
+            await recordSkippedTrade(trade, userAddress, 'SELL', 'No bids in order book');
+            await UserActivity.updateOne({ _id: trade._id }, { bot: true });
+            return;
+        }
+
+        const maxPriceBid = orderBook.bids.reduce((max, bid) => {
+            return parseFloat(bid.price) > parseFloat(max.price) ? bid : max;
+        }, orderBook.bids[0]);
+
+        const bestBidPrice = parseFloat(maxPriceBid.price);
+        Logger.info(`[PAPER] Best bid: ${maxPriceBid.size} @ $${bestBidPrice.toFixed(4)}`);
+
+        // Calculate USD value
+        const sellValue = sellTokens * bestBidPrice;
+
+        Logger.orderResult(
+            true,
+            `[PAPER] Would sell ${sellTokens.toFixed(2)} tokens at $${bestBidPrice.toFixed(4)} ($${sellValue.toFixed(2)})`
+        );
+
+        // Record the paper trade
+        const { realizedPnl } = await recordPaperTrade(
+            trade,
+            userAddress,
+            'SELL',
+            sellValue,
+            sellTokens,
+            bestBidPrice,
+            `Sold ${(traderSellPercent * 100).toFixed(2)}% of position`,
+            { bestBid: bestBidPrice }
+        );
+
+        if (realizedPnl !== 0) {
+            const pnlSign = realizedPnl >= 0 ? '+' : '';
+            Logger.info(
+                `[PAPER] Realized P&L: ${pnlSign}$${realizedPnl.toFixed(2)}`
+            );
+        }
+
+        // Mark original trade as processed
+        await UserActivity.updateOne({ _id: trade._id }, { bot: true });
+    } else if (condition === 'merge') {
+        Logger.info('[PAPER] Simulating MERGE strategy...');
+
+        const paperPosition = await getPaperPosition(trade.conditionId);
+
+        if (!paperPosition || paperPosition.size <= 0) {
+            Logger.warning('[PAPER] No position to merge');
+            await recordSkippedTrade(trade, userAddress, 'SELL', 'No position to merge');
+            await UserActivity.updateOne({ _id: trade._id }, { bot: true });
+            return;
+        }
+
+        // Fetch order book for merge price
+        const orderBook = await fetchOrderBook(trade.asset);
+        if (!orderBook || !orderBook.bids || orderBook.bids.length === 0) {
+            Logger.warning('[PAPER] No bids available for merge');
+            await UserActivity.updateOne({ _id: trade._id }, { bot: true });
+            return;
+        }
+
+        const maxPriceBid = orderBook.bids.reduce((max, bid) => {
+            return parseFloat(bid.price) > parseFloat(max.price) ? bid : max;
+        }, orderBook.bids[0]);
+
+        const bestBidPrice = parseFloat(maxPriceBid.price);
+        const sellValue = paperPosition.size * bestBidPrice;
+
+        Logger.orderResult(
+            true,
+            `[PAPER] Would merge (sell all) ${paperPosition.size.toFixed(2)} tokens at $${bestBidPrice.toFixed(4)} ($${sellValue.toFixed(2)})`
+        );
+
+        // Record the merge as a sell
+        await recordPaperTrade(
+            trade,
+            userAddress,
+            'SELL',
+            sellValue,
+            paperPosition.size,
+            bestBidPrice,
+            'Merge: Sold entire position',
+            { bestBid: bestBidPrice }
+        );
+
+        await UserActivity.updateOne({ _id: trade._id }, { bot: true });
+    } else {
+        Logger.error(`[PAPER] Unknown condition: ${condition}`);
+    }
+};
+
+export default postPaperOrder;
