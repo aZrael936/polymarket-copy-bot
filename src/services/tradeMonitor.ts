@@ -105,6 +105,9 @@ const init = async () => {
     Logger.tradersPositions(USER_ADDRESSES, positionCounts, positionDetails, profitabilities);
 };
 
+// Track if this is the first run (to mark historical trades as processed)
+let isFirstRun = true;
+
 const fetchTradeData = async () => {
     for (const { address, UserActivity, UserPosition } of userModels) {
         try {
@@ -116,10 +119,14 @@ const fetchTradeData = async () => {
                 continue;
             }
 
+            // Calculate cutoff timestamp (TOO_OLD_TIMESTAMP is in hours)
+            const cutoffTimestamp = Date.now() - TOO_OLD_TIMESTAMP * 60 * 60 * 1000;
+
             // Process each activity
             for (const activity of activities) {
-                // Skip if too old
-                if (activity.timestamp < TOO_OLD_TIMESTAMP) {
+                // Skip if too old (activity.timestamp is in milliseconds)
+                const activityTime = activity.timestamp > 1e12 ? activity.timestamp : activity.timestamp * 1000;
+                if (activityTime < cutoffTimestamp) {
                     continue;
                 }
 
@@ -133,6 +140,7 @@ const fetchTradeData = async () => {
                 }
 
                 // Save new trade to database
+                // On first run, mark historical trades as already processed
                 const newActivity = new UserActivity({
                     proxyWallet: activity.proxyWallet,
                     timestamp: activity.timestamp,
@@ -155,12 +163,14 @@ const fetchTradeData = async () => {
                     bio: activity.bio,
                     profileImage: activity.profileImage,
                     profileImageOptimized: activity.profileImageOptimized,
-                    bot: false,
-                    botExcutedTime: 0,
+                    bot: isFirstRun, // Mark as processed on first run
+                    botExcutedTime: isFirstRun ? 999 : 0,
                 });
 
                 await newActivity.save();
-                Logger.info(`New trade detected for ${address.slice(0, 6)}...${address.slice(-4)}`);
+                if (!isFirstRun) {
+                    Logger.info(`New trade detected for ${address.slice(0, 6)}...${address.slice(-4)}`);
+                }
             }
 
             // Also fetch and update positions
@@ -211,8 +221,6 @@ const fetchTradeData = async () => {
     }
 };
 
-// Track if this is the first run
-let isFirstRun = true;
 // Track if monitor should continue running
 let isRunning = true;
 
@@ -229,22 +237,12 @@ const tradeMonitor = async () => {
     Logger.success(`Monitoring ${USER_ADDRESSES.length} trader(s) every ${FETCH_INTERVAL}s`);
     Logger.separator();
 
-    // On first run, mark all existing historical trades as already processed
+    // First fetch - this will mark historical trades as processed
     if (isFirstRun) {
-        Logger.info('First run: marking all historical trades as processed...');
-        for (const { address, UserActivity } of userModels) {
-            const count = await UserActivity.updateMany(
-                { bot: false },
-                { $set: { bot: true, botExcutedTime: 999 } }
-            );
-            if (count.modifiedCount > 0) {
-                Logger.info(
-                    `Marked ${count.modifiedCount} historical trades as processed for ${address.slice(0, 6)}...${address.slice(-4)}`
-                );
-            }
-        }
+        Logger.info('First run: fetching and marking historical trades as processed...');
+        await fetchTradeData();
         isFirstRun = false;
-        Logger.success('\nHistorical trades processed. Now monitoring for new trades only.');
+        Logger.success('Historical trades processed. Now monitoring for new trades only.');
         Logger.separator();
     }
 

@@ -30,13 +30,21 @@ interface OrderBook {
  */
 const fetchOrderBook = async (tokenId: string): Promise<OrderBook | null> => {
     try {
-        const response = await axios.get(`${CLOB_HTTP_URL}/book`, {
+        // Ensure no trailing slash on base URL
+        const baseUrl = CLOB_HTTP_URL.replace(/\/$/, '');
+        const response = await axios.get(`${baseUrl}/book`, {
             params: { token_id: tokenId },
             timeout: ENV.REQUEST_TIMEOUT_MS,
         });
         return response.data;
     } catch (error) {
-        Logger.warning(`Failed to fetch order book for ${tokenId}`);
+        if (axios.isAxiosError(error)) {
+            const status = error.response?.status;
+            const message = error.response?.data?.message || error.message;
+            Logger.warning(`Failed to fetch order book (${status || 'network error'}): ${message}`);
+        } else {
+            Logger.warning(`Failed to fetch order book for ${tokenId}`);
+        }
         return null;
     }
 };
@@ -217,39 +225,46 @@ const postPaperOrder = async (
 
         // Fetch order book to get realistic price
         const orderBook = await fetchOrderBook(trade.asset);
-        if (!orderBook || !orderBook.asks || orderBook.asks.length === 0) {
-            Logger.warning('[PAPER] No asks available in order book');
-            await recordSkippedTrade(trade, userAddress, 'BUY', 'No asks in order book');
-            await UserActivity.updateOne({ _id: trade._id }, { bot: true });
-            return;
-        }
+        let executionPrice: number;
+        let priceSource: string;
 
-        const minPriceAsk = orderBook.asks.reduce((min, ask) => {
-            return parseFloat(ask.price) < parseFloat(min.price) ? ask : min;
-        }, orderBook.asks[0]);
+        if (orderBook && orderBook.asks && orderBook.asks.length > 0) {
+            const minPriceAsk = orderBook.asks.reduce((min, ask) => {
+                return parseFloat(ask.price) < parseFloat(min.price) ? ask : min;
+            }, orderBook.asks[0]);
 
-        const bestAskPrice = parseFloat(minPriceAsk.price);
-        Logger.info(`[PAPER] Best ask: ${minPriceAsk.size} @ $${bestAskPrice.toFixed(4)}`);
+            const bestAskPrice = parseFloat(minPriceAsk.price);
+            Logger.info(`[PAPER] Best ask: ${minPriceAsk.size} @ $${bestAskPrice.toFixed(4)}`);
 
-        // Check slippage
-        if (bestAskPrice - 0.05 > trade.price) {
-            Logger.warning('[PAPER] Price slippage too high - skipping trade');
-            await recordSkippedTrade(
-                trade,
-                userAddress,
-                'BUY',
-                `Slippage too high: ask $${bestAskPrice.toFixed(4)} vs trader $${trade.price.toFixed(4)}`
-            );
-            await UserActivity.updateOne({ _id: trade._id }, { bot: true });
-            return;
+            // Check slippage
+            if (bestAskPrice - 0.05 > trade.price) {
+                Logger.warning('[PAPER] Price slippage too high - skipping trade');
+                await recordSkippedTrade(
+                    trade,
+                    userAddress,
+                    'BUY',
+                    `Slippage too high: ask $${bestAskPrice.toFixed(4)} vs trader $${trade.price.toFixed(4)}`
+                );
+                await UserActivity.updateOne({ _id: trade._id }, { bot: true });
+                return;
+            }
+
+            executionPrice = bestAskPrice;
+            priceSource = 'order book';
+        } else {
+            // Fall back to trader's execution price if order book unavailable
+            // This can happen for resolved markets or markets with no liquidity
+            Logger.info(`[PAPER] Order book unavailable, using trader's price: $${trade.price.toFixed(4)}`);
+            executionPrice = trade.price;
+            priceSource = 'trader price (order book unavailable)';
         }
 
         // Simulate the purchase
-        const simulatedTokens = orderCalc.finalAmount / bestAskPrice;
+        const simulatedTokens = orderCalc.finalAmount / executionPrice;
 
         Logger.orderResult(
             true,
-            `[PAPER] Would buy $${orderCalc.finalAmount.toFixed(2)} at $${bestAskPrice.toFixed(4)} (${simulatedTokens.toFixed(2)} tokens)`
+            `[PAPER] Would buy $${orderCalc.finalAmount.toFixed(2)} at $${executionPrice.toFixed(4)} (${simulatedTokens.toFixed(2)} tokens) [${priceSource}]`
         );
 
         // Record the paper trade
@@ -259,9 +274,9 @@ const postPaperOrder = async (
             'BUY',
             orderCalc.finalAmount,
             simulatedTokens,
-            bestAskPrice,
-            orderCalc.reasoning,
-            { bestAsk: bestAskPrice }
+            executionPrice,
+            `${orderCalc.reasoning} [${priceSource}]`,
+            { bestAsk: executionPrice }
         );
 
         // Mark original trade as processed
@@ -345,26 +360,30 @@ const postPaperOrder = async (
 
         // Fetch order book to get realistic price
         const orderBook = await fetchOrderBook(trade.asset);
-        if (!orderBook || !orderBook.bids || orderBook.bids.length === 0) {
-            Logger.warning('[PAPER] No bids available in order book');
-            await recordSkippedTrade(trade, userAddress, 'SELL', 'No bids in order book');
-            await UserActivity.updateOne({ _id: trade._id }, { bot: true });
-            return;
+        let sellPrice: number;
+        let sellPriceSource: string;
+
+        if (orderBook && orderBook.bids && orderBook.bids.length > 0) {
+            const maxPriceBid = orderBook.bids.reduce((max, bid) => {
+                return parseFloat(bid.price) > parseFloat(max.price) ? bid : max;
+            }, orderBook.bids[0]);
+
+            sellPrice = parseFloat(maxPriceBid.price);
+            sellPriceSource = 'order book';
+            Logger.info(`[PAPER] Best bid: ${maxPriceBid.size} @ $${sellPrice.toFixed(4)}`);
+        } else {
+            // Fall back to trader's execution price if order book unavailable
+            Logger.info(`[PAPER] Order book unavailable, using trader's price: $${trade.price.toFixed(4)}`);
+            sellPrice = trade.price;
+            sellPriceSource = 'trader price (order book unavailable)';
         }
 
-        const maxPriceBid = orderBook.bids.reduce((max, bid) => {
-            return parseFloat(bid.price) > parseFloat(max.price) ? bid : max;
-        }, orderBook.bids[0]);
-
-        const bestBidPrice = parseFloat(maxPriceBid.price);
-        Logger.info(`[PAPER] Best bid: ${maxPriceBid.size} @ $${bestBidPrice.toFixed(4)}`);
-
         // Calculate USD value
-        const sellValue = sellTokens * bestBidPrice;
+        const sellValue = sellTokens * sellPrice;
 
         Logger.orderResult(
             true,
-            `[PAPER] Would sell ${sellTokens.toFixed(2)} tokens at $${bestBidPrice.toFixed(4)} ($${sellValue.toFixed(2)})`
+            `[PAPER] Would sell ${sellTokens.toFixed(2)} tokens at $${sellPrice.toFixed(4)} ($${sellValue.toFixed(2)}) [${sellPriceSource}]`
         );
 
         // Record the paper trade
@@ -374,9 +393,9 @@ const postPaperOrder = async (
             'SELL',
             sellValue,
             sellTokens,
-            bestBidPrice,
-            `Sold ${(traderSellPercent * 100).toFixed(2)}% of position`,
-            { bestBid: bestBidPrice }
+            sellPrice,
+            `Sold ${(traderSellPercent * 100).toFixed(2)}% of position [${sellPriceSource}]`,
+            { bestBid: sellPrice }
         );
 
         if (realizedPnl !== 0) {
@@ -402,22 +421,24 @@ const postPaperOrder = async (
 
         // Fetch order book for merge price
         const orderBook = await fetchOrderBook(trade.asset);
-        if (!orderBook || !orderBook.bids || orderBook.bids.length === 0) {
-            Logger.warning('[PAPER] No bids available for merge');
-            await UserActivity.updateOne({ _id: trade._id }, { bot: true });
-            return;
+        let mergePrice: number;
+
+        if (orderBook && orderBook.bids && orderBook.bids.length > 0) {
+            const maxPriceBid = orderBook.bids.reduce((max, bid) => {
+                return parseFloat(bid.price) > parseFloat(max.price) ? bid : max;
+            }, orderBook.bids[0]);
+            mergePrice = parseFloat(maxPriceBid.price);
+        } else {
+            // Fall back to trader's price
+            Logger.info(`[PAPER] Order book unavailable for merge, using trader's price: $${trade.price.toFixed(4)}`);
+            mergePrice = trade.price;
         }
 
-        const maxPriceBid = orderBook.bids.reduce((max, bid) => {
-            return parseFloat(bid.price) > parseFloat(max.price) ? bid : max;
-        }, orderBook.bids[0]);
-
-        const bestBidPrice = parseFloat(maxPriceBid.price);
-        const sellValue = paperPosition.size * bestBidPrice;
+        const sellValue = paperPosition.size * mergePrice;
 
         Logger.orderResult(
             true,
-            `[PAPER] Would merge (sell all) ${paperPosition.size.toFixed(2)} tokens at $${bestBidPrice.toFixed(4)} ($${sellValue.toFixed(2)})`
+            `[PAPER] Would merge (sell all) ${paperPosition.size.toFixed(2)} tokens at $${mergePrice.toFixed(4)} ($${sellValue.toFixed(2)})`
         );
 
         // Record the merge as a sell
@@ -427,9 +448,9 @@ const postPaperOrder = async (
             'SELL',
             sellValue,
             paperPosition.size,
-            bestBidPrice,
+            mergePrice,
             'Merge: Sold entire position',
-            { bestBid: bestBidPrice }
+            { bestBid: mergePrice }
         );
 
         await UserActivity.updateOne({ _id: trade._id }, { bot: true });
