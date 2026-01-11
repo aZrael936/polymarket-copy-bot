@@ -39,6 +39,7 @@
         "paper-stats": "ts-node src/scripts/checkPaperStats.ts",
         "paper-reset": "ts-node src/scripts/resetPaperTrades.ts",
         "paper-fresh-start": "ts-node src/scripts/paperFreshStart.ts",
+        "paper-trace": "ts-node src/scripts/paperTrace.ts",
         "lint": "eslint .",
         "lint:fix": "eslint --fix .",
         "format": "prettier --write ."

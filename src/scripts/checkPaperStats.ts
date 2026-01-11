@@ -116,14 +116,10 @@ const main = async () => {
     // Get all open positions and update their current prices
     const positions = await PaperPosition.find({ size: { $gt: 0 } });
 
-    let totalUnrealizedPnl = 0;
-    const updatedPositions: Array<{
-        position: typeof positions[0];
-        currentPrice: number | null;
-        unrealizedPnl: number;
-    }> = [];
+    console.log(`\n${colors.dim}Fetching prices for ${positions.length} positions...${colors.reset}`);
 
-    for (const position of positions) {
+    // Fetch all prices in PARALLEL for performance
+    const pricePromises = positions.map(async (position) => {
         const currentPrice = await fetchCurrentPrice(position.asset);
         let unrealizedPnl = 0;
 
@@ -136,9 +132,11 @@ const main = async () => {
             unrealizedPnl = position.unrealizedPnl;
         }
 
-        totalUnrealizedPnl += unrealizedPnl;
-        updatedPositions.push({ position, currentPrice, unrealizedPnl });
-    }
+        return { position, currentPrice, unrealizedPnl };
+    });
+
+    const updatedPositions = await Promise.all(pricePromises);
+    const totalUnrealizedPnl = updatedPositions.reduce((sum, p) => sum + p.unrealizedPnl, 0);
 
     // Calculate position value
     const positionValue = updatedPositions.reduce((sum, p) => {

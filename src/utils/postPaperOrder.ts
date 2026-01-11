@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { ENV } from '../config/env';
-import { UserActivityInterface } from '../interfaces/User';
+import { UserActivityInterface, UserPositionInterface } from '../interfaces/User';
 import { getUserActivityModel } from '../models/userHistory';
 import {
     PaperTrade,
@@ -11,10 +11,15 @@ import {
 } from '../models/paperTrades';
 import Logger from './logger';
 import { calculateOrderSize, getTradeMultiplier } from '../config/copyStrategy';
+import fetchData from './fetchData';
 
 const COPY_STRATEGY_CONFIG = ENV.COPY_STRATEGY_CONFIG;
 const CLOB_HTTP_URL = ENV.CLOB_HTTP_URL;
 const PAPER_INITIAL_BALANCE = ENV.PAPER_INITIAL_BALANCE;
+
+// Position limits for paper trading
+const MAX_OPEN_POSITIONS = parseInt(process.env.PAPER_MAX_POSITIONS || '50', 10);
+const MAX_POSITION_VALUE_USD = parseFloat(process.env.PAPER_MAX_POSITION_VALUE || '500');
 
 // Polymarket minimum order sizes
 const MIN_ORDER_SIZE_USD = 1.0;
@@ -65,6 +70,34 @@ const getPaperPosition = async (conditionId: string) => {
 };
 
 /**
+ * Get count of open paper positions
+ */
+const getOpenPositionCount = async (): Promise<number> => {
+    return await PaperPosition.countDocuments({ size: { $gt: 0 } });
+};
+
+/**
+ * Fetch trader's current position from Polymarket API
+ */
+const fetchTraderPosition = async (
+    traderAddress: string,
+    conditionId: string
+): Promise<UserPositionInterface | null> => {
+    try {
+        const positions: UserPositionInterface[] = await fetchData(
+            `https://data-api.polymarket.com/positions?user=${traderAddress}`
+        );
+        if (Array.isArray(positions)) {
+            return positions.find((p) => p.conditionId === conditionId) || null;
+        }
+        return null;
+    } catch (error) {
+        Logger.warning(`[PAPER] Failed to fetch trader position: ${error}`);
+        return null;
+    }
+};
+
+/**
  * Record a paper trade and update positions/stats
  */
 const recordPaperTrade = async (
@@ -82,6 +115,7 @@ const recordPaperTrade = async (
     // Create paper trade record
     await PaperTrade.create({
         originalTradeId: trade._id,
+        originalTxHash: trade.transactionHash, // For traceability
         traderAddress: userAddress,
         conditionId: trade.conditionId,
         asset: trade.asset,
@@ -161,6 +195,7 @@ const recordSkippedTrade = async (
 ) => {
     await PaperTrade.create({
         originalTradeId: trade._id,
+        originalTxHash: trade.transactionHash, // For traceability
         traderAddress: userAddress,
         conditionId: trade.conditionId,
         asset: trade.asset,
@@ -194,16 +229,50 @@ const postPaperOrder = async (
     if (condition === 'buy') {
         Logger.info('[PAPER] Simulating BUY strategy...');
 
+        // Check position limits FIRST
+        const openPositionCount = await getOpenPositionCount();
+        const paperPosition = await getPaperPosition(trade.conditionId);
+        const isNewPosition = !paperPosition || paperPosition.size <= 0;
+
+        // Check max positions limit (only for NEW positions)
+        if (isNewPosition && openPositionCount >= MAX_OPEN_POSITIONS) {
+            Logger.warning(
+                `[PAPER] Max positions reached (${openPositionCount}/${MAX_OPEN_POSITIONS}) - skipping new position`
+            );
+            await recordSkippedTrade(
+                trade,
+                userAddress,
+                'BUY',
+                `Max positions limit reached (${openPositionCount}/${MAX_OPEN_POSITIONS})`
+            );
+            await UserActivity.updateOne({ _id: trade._id }, { bot: true });
+            return;
+        }
+
+        // Check max position value limit
+        const currentPositionValue = paperPosition
+            ? paperPosition.size * paperPosition.avgPrice
+            : 0;
+
+        if (currentPositionValue >= MAX_POSITION_VALUE_USD) {
+            Logger.warning(
+                `[PAPER] Position value limit reached ($${currentPositionValue.toFixed(2)}/$${MAX_POSITION_VALUE_USD}) - skipping`
+            );
+            await recordSkippedTrade(
+                trade,
+                userAddress,
+                'BUY',
+                `Position value limit reached ($${currentPositionValue.toFixed(2)}/$${MAX_POSITION_VALUE_USD})`
+            );
+            await UserActivity.updateOne({ _id: trade._id }, { bot: true });
+            return;
+        }
+
         // Get paper balance
         const paperBalance = await getPaperBalance();
         Logger.info(`[PAPER] Your simulated balance: $${paperBalance.toFixed(2)}`);
         Logger.info(`[PAPER] Trader bought: $${trade.usdcSize.toFixed(2)}`);
-
-        // Get current paper position for position limit checks
-        const paperPosition = await getPaperPosition(trade.conditionId);
-        const currentPositionValue = paperPosition
-            ? paperPosition.size * paperPosition.avgPrice
-            : 0;
+        Logger.info(`[PAPER] Open positions: ${openPositionCount}/${MAX_OPEN_POSITIONS}`);
 
         // Calculate order size using the same strategy as real trading
         const orderCalc = calculateOrderSize(
@@ -298,34 +367,38 @@ const postPaperOrder = async (
             `[PAPER] Your simulated position: ${paperPosition.size.toFixed(2)} tokens @ avg $${paperPosition.avgPrice.toFixed(4)}`
         );
 
-        // Get previous paper buys for this asset
-        const previousPaperBuys = await PaperTrade.find({
-            conditionId: trade.conditionId,
-            side: 'BUY',
-            skipped: false,
-        }).exec();
-
-        const totalBoughtTokens = previousPaperBuys.reduce(
-            (sum, buy) => sum + (buy.simulatedTokens || 0),
-            0
-        );
+        // Fetch TRADER's actual position to calculate correct sell percentage
+        const traderPosition = await fetchTraderPosition(userAddress, trade.conditionId);
 
         let sellTokens: number;
+        let traderSellPercent: number;
 
-        // Calculate sell amount based on trader's sell percentage
-        const traderSellPercent = trade.size / (trade.size + (paperPosition.size || 0));
+        if (traderPosition) {
+            // Trader's position AFTER the sell = traderPosition.size
+            // Trader's position BEFORE the sell = traderPosition.size + trade.size
+            const traderPositionBefore = traderPosition.size + trade.size;
+            traderSellPercent = trade.size / traderPositionBefore;
 
-        if (totalBoughtTokens > 0) {
-            sellTokens = totalBoughtTokens * traderSellPercent;
             Logger.info(
-                `[PAPER] Calculating from tracked purchases: ${totalBoughtTokens.toFixed(2)} x ${(traderSellPercent * 100).toFixed(2)}% = ${sellTokens.toFixed(2)} tokens`
+                `[PAPER] Trader position: ${traderPositionBefore.toFixed(2)} tokens -> selling ${trade.size.toFixed(2)} (${(traderSellPercent * 100).toFixed(2)}%)`
             );
+        } else if (!traderPosition && trade.size > 0) {
+            // Trader sold entire position (position is now 0 or not found)
+            traderSellPercent = 1.0;
+            Logger.info('[PAPER] Trader closed entire position -> selling all');
         } else {
-            sellTokens = paperPosition.size * traderSellPercent;
-            Logger.info(
-                `[PAPER] Using position size: ${paperPosition.size.toFixed(2)} x ${(traderSellPercent * 100).toFixed(2)}% = ${sellTokens.toFixed(2)} tokens`
+            // Fallback: estimate based on trade size vs our position
+            traderSellPercent = Math.min(1.0, trade.size / (trade.size + paperPosition.size));
+            Logger.warning(
+                `[PAPER] Could not fetch trader position, estimating sell %: ${(traderSellPercent * 100).toFixed(2)}%`
             );
         }
+
+        // Apply sell percentage to OUR position
+        sellTokens = paperPosition.size * traderSellPercent;
+        Logger.info(
+            `[PAPER] Selling ${(traderSellPercent * 100).toFixed(2)}% of our position: ${paperPosition.size.toFixed(2)} x ${(traderSellPercent * 100).toFixed(2)}% = ${sellTokens.toFixed(2)} tokens`
+        );
 
         // Apply multiplier
         const multiplier = getTradeMultiplier(COPY_STRATEGY_CONFIG, trade.usdcSize);

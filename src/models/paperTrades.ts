@@ -3,6 +3,7 @@ import mongoose, { Schema, Document } from 'mongoose';
 // Paper Trade Schema - Individual simulated trades
 export interface PaperTradeDocument extends Document {
     originalTradeId: mongoose.Types.ObjectId;
+    originalTxHash?: string; // For traceability to original blockchain tx
     traderAddress: string;
     conditionId: string;
     asset: string;
@@ -30,15 +31,16 @@ const paperTradeSchema = new Schema({
         required: true,
         auto: true,
     },
-    originalTradeId: { type: Schema.Types.ObjectId, required: true },
-    traderAddress: { type: String, required: true },
-    conditionId: { type: String, required: true },
+    originalTradeId: { type: Schema.Types.ObjectId, required: true, index: true },
+    originalTxHash: { type: String, required: false, index: true }, // For traceability
+    traderAddress: { type: String, required: true, index: true },
+    conditionId: { type: String, required: true, index: true },
     asset: { type: String, required: true },
-    side: { type: String, enum: ['BUY', 'SELL'], required: true },
+    side: { type: String, enum: ['BUY', 'SELL'], required: true, index: true },
     simulatedSize: { type: Number, required: true },
     simulatedTokens: { type: Number, required: true },
     simulatedPrice: { type: Number, required: true },
-    timestamp: { type: Number, required: true },
+    timestamp: { type: Number, required: true, index: true },
     marketTitle: { type: String, required: false },
     marketSlug: { type: String, required: false },
     outcome: { type: String, required: false },
@@ -48,9 +50,14 @@ const paperTradeSchema = new Schema({
     bestBid: { type: Number, required: false },
     traderUsdcSize: { type: Number, required: true },
     traderPrice: { type: Number, required: true },
-    skipped: { type: Boolean, default: false },
+    skipped: { type: Boolean, default: false, index: true },
     skipReason: { type: String, required: false },
 });
+
+// Compound indexes for common queries
+paperTradeSchema.index({ conditionId: 1, side: 1, skipped: 1 });
+paperTradeSchema.index({ timestamp: -1 }); // For sorting by most recent
+paperTradeSchema.index({ traderAddress: 1, timestamp: -1 });
 
 // Paper Position Schema - Simulated holdings
 export interface PaperPositionDocument extends Document {
@@ -78,8 +85,8 @@ const paperPositionSchema = new Schema({
         auto: true,
     },
     conditionId: { type: String, required: true, unique: true },
-    asset: { type: String, required: true },
-    size: { type: Number, required: true, default: 0 },
+    asset: { type: String, required: true, index: true },
+    size: { type: Number, required: true, default: 0, index: true },
     avgPrice: { type: Number, required: true, default: 0 },
     totalInvested: { type: Number, required: true, default: 0 },
     currentPrice: { type: Number, required: false },
@@ -91,8 +98,11 @@ const paperPositionSchema = new Schema({
     outcome: { type: String, required: false },
     outcomeIndex: { type: Number, required: false },
     firstTradeAt: { type: Number, required: true },
-    lastUpdateAt: { type: Number, required: true },
+    lastUpdateAt: { type: Number, required: true, index: true },
 });
+
+// Index for finding open positions (size > 0)
+paperPositionSchema.index({ size: 1, lastUpdateAt: -1 });
 
 // Paper Portfolio Stats Schema - Aggregate statistics
 export interface PaperPortfolioStatsDocument extends Document {
