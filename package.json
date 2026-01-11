@@ -38,6 +38,7 @@
         "health-check": "ts-node src/scripts/healthCheck.ts",
         "paper-stats": "ts-node src/scripts/checkPaperStats.ts",
         "paper-reset": "ts-node src/scripts/resetPaperTrades.ts",
+        "paper-fresh-start": "ts-node src/scripts/paperFreshStart.ts",
         "lint": "eslint .",
         "lint:fix": "eslint --fix .",
         "format": "prettier --write ."
