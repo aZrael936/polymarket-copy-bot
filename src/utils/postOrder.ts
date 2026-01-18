@@ -4,6 +4,7 @@ import { UserActivityInterface, UserPositionInterface } from '../interfaces/User
 import { getUserActivityModel } from '../models/userHistory';
 import Logger from './logger';
 import { calculateOrderSize, getTradeMultiplier } from '../config/copyStrategy';
+import { notifyTradeExecuted, notifyTradeFailed, notifyTradeSkipped } from './telegramNotifier';
 
 const RETRY_LIMIT = ENV.RETRY_LIMIT;
 const COPY_STRATEGY_CONFIG = ENV.COPY_STRATEGY_CONFIG;
@@ -79,15 +80,22 @@ const postOrder = async (
         Logger.info('Executing MERGE strategy...');
         if (!my_position) {
             Logger.warning('No position to merge');
+            await notifyTradeSkipped('MERGE', 'No position to merge', trade.title);
             await UserActivity.updateOne({ _id: trade._id }, { bot: true });
             return;
         }
         let remaining = my_position.size;
+        const initialRemaining = remaining;
 
         // Check minimum order size
         if (remaining < MIN_ORDER_SIZE_TOKENS) {
             Logger.warning(
                 `Position size (${remaining.toFixed(2)} tokens) too small to merge - skipping`
+            );
+            await notifyTradeSkipped(
+                'MERGE',
+                `Position size (${remaining.toFixed(2)} tokens) too small`,
+                trade.title
             );
             await UserActivity.updateOne({ _id: trade._id }, { bot: true });
             return;
@@ -153,6 +161,7 @@ const postOrder = async (
             }
         }
         if (abortDueToFunds) {
+            await notifyTradeFailed('MERGE', 'Insufficient balance or allowance', trade.title);
             await UserActivity.updateOne(
                 { _id: trade._id },
                 { bot: true, botExcutedTime: RETRY_LIMIT }
@@ -160,8 +169,20 @@ const postOrder = async (
             return;
         }
         if (retry >= RETRY_LIMIT) {
+            await notifyTradeFailed('MERGE', `Failed after ${RETRY_LIMIT} attempts`, trade.title);
             await UserActivity.updateOne({ _id: trade._id }, { bot: true, botExcutedTime: retry });
         } else {
+            const soldTokens = initialRemaining - remaining;
+            if (soldTokens > 0) {
+                await notifyTradeExecuted(
+                    'MERGE',
+                    soldTokens,
+                    my_position.curPrice || 0,
+                    soldTokens * (my_position.curPrice || 0),
+                    trade.title,
+                    trade.outcome
+                );
+            }
             await UserActivity.updateOne({ _id: trade._id }, { bot: true });
         }
     } else if (condition === 'buy') {
@@ -191,6 +212,7 @@ const postOrder = async (
             if (orderCalc.belowMinimum) {
                 Logger.warning(`💡 Increase COPY_SIZE or wait for larger trades`);
             }
+            await notifyTradeSkipped('BUY', orderCalc.reasoning, trade.title);
             await UserActivity.updateOne({ _id: trade._id }, { bot: true });
             return;
         }
@@ -205,6 +227,7 @@ const postOrder = async (
             const orderBook = await clobClient.getOrderBook(trade.asset);
             if (!orderBook.asks || orderBook.asks.length === 0) {
                 Logger.warning('No asks available in order book');
+                await notifyTradeSkipped('BUY', 'No asks available in order book', trade.title);
                 await UserActivity.updateOne({ _id: trade._id }, { bot: true });
                 break;
             }
@@ -216,6 +239,7 @@ const postOrder = async (
             Logger.info(`Best ask: ${minPriceAsk.size} @ $${minPriceAsk.price}`);
             if (parseFloat(minPriceAsk.price) - 0.05 > trade.price) {
                 Logger.warning('Price slippage too high - skipping trade');
+                await notifyTradeSkipped('BUY', 'Price slippage too high', trade.title);
                 await UserActivity.updateOne({ _id: trade._id }, { bot: true });
                 break;
             }
@@ -276,6 +300,7 @@ const postOrder = async (
             }
         }
         if (abortDueToFunds) {
+            await notifyTradeFailed('BUY', 'Insufficient balance or allowance', trade.title);
             await UserActivity.updateOne(
                 { _id: trade._id },
                 { bot: true, botExcutedTime: RETRY_LIMIT, myBoughtSize: totalBoughtTokens }
@@ -283,11 +308,24 @@ const postOrder = async (
             return;
         }
         if (retry >= RETRY_LIMIT) {
+            await notifyTradeFailed('BUY', `Failed after ${RETRY_LIMIT} attempts`, trade.title);
             await UserActivity.updateOne(
                 { _id: trade._id },
                 { bot: true, botExcutedTime: retry, myBoughtSize: totalBoughtTokens }
             );
         } else {
+            // Notify successful trade execution
+            if (totalBoughtTokens > 0) {
+                const avgPrice = (orderCalc.finalAmount - remaining) / totalBoughtTokens;
+                await notifyTradeExecuted(
+                    'BUY',
+                    totalBoughtTokens,
+                    avgPrice,
+                    orderCalc.finalAmount - remaining,
+                    trade.title,
+                    trade.outcome
+                );
+            }
             await UserActivity.updateOne(
                 { _id: trade._id },
                 { bot: true, myBoughtSize: totalBoughtTokens }
@@ -306,6 +344,7 @@ const postOrder = async (
         let remaining = 0;
         if (!my_position) {
             Logger.warning('No position to sell');
+            await notifyTradeSkipped('SELL', 'No position to sell', trade.title);
             await UserActivity.updateOne({ _id: trade._id }, { bot: true });
             return;
         }
@@ -379,6 +418,11 @@ const postOrder = async (
                 `❌ Cannot execute: Sell amount ${remaining.toFixed(2)} tokens below minimum (${MIN_ORDER_SIZE_TOKENS} token)`
             );
             Logger.warning(`💡 This happens when position sizes are too small or mismatched`);
+            await notifyTradeSkipped(
+                'SELL',
+                `Sell amount ${remaining.toFixed(2)} tokens below minimum`,
+                trade.title
+            );
             await UserActivity.updateOne({ _id: trade._id }, { bot: true });
             return;
         }
@@ -396,9 +440,11 @@ const postOrder = async (
         let abortDueToFunds = false;
         let totalSoldTokens = 0; // Track total tokens sold
 
+        const initialSellAmount = remaining;
         while (remaining > 0 && retry < RETRY_LIMIT) {
             const orderBook = await clobClient.getOrderBook(trade.asset);
             if (!orderBook.bids || orderBook.bids.length === 0) {
+                await notifyTradeSkipped('SELL', 'No bids available in order book', trade.title);
                 await UserActivity.updateOne({ _id: trade._id }, { bot: true });
                 Logger.warning('No bids available in order book');
                 break;
@@ -501,6 +547,7 @@ const postOrder = async (
         }
 
         if (abortDueToFunds) {
+            await notifyTradeFailed('SELL', 'Insufficient balance or allowance', trade.title);
             await UserActivity.updateOne(
                 { _id: trade._id },
                 { bot: true, botExcutedTime: RETRY_LIMIT }
@@ -508,8 +555,24 @@ const postOrder = async (
             return;
         }
         if (retry >= RETRY_LIMIT) {
+            await notifyTradeFailed('SELL', `Failed after ${RETRY_LIMIT} attempts`, trade.title);
             await UserActivity.updateOne({ _id: trade._id }, { bot: true, botExcutedTime: retry });
         } else {
+            // Notify successful trade execution
+            if (totalSoldTokens > 0) {
+                const avgPrice =
+                    initialSellAmount - remaining > 0
+                        ? (initialSellAmount - remaining) / totalSoldTokens
+                        : my_position.curPrice || 0;
+                await notifyTradeExecuted(
+                    'SELL',
+                    totalSoldTokens,
+                    avgPrice,
+                    totalSoldTokens * avgPrice,
+                    trade.title,
+                    trade.outcome
+                );
+            }
             await UserActivity.updateOne({ _id: trade._id }, { bot: true });
         }
     } else {

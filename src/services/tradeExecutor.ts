@@ -6,6 +6,7 @@ import fetchData from '../utils/fetchData';
 import getMyBalance from '../utils/getMyBalance';
 import postOrder from '../utils/postOrder';
 import Logger from '../utils/logger';
+import { notifyTradeDetected } from '../utils/telegramNotifier';
 
 const USER_ADDRESSES = ENV.USER_ADDRESSES;
 const RETRY_LIMIT = ENV.RETRY_LIMIT;
@@ -159,6 +160,9 @@ const doTrading = async (clobClient: ClobClient, trades: TradeWithUser[]) => {
             eventSlug: trade.eventSlug,
             transactionHash: trade.transactionHash,
         });
+
+        // Send Telegram notification for trade detected
+        await notifyTradeDetected(trade.userAddress, trade);
 
         const my_positions: UserPositionInterface[] = await fetchData(
             `https://data-api.polymarket.com/positions?user=${PROXY_WALLET}`
