@@ -125,7 +125,8 @@ const fetchTradeData = async () => {
             // Process each activity
             for (const activity of activities) {
                 // Skip if too old (activity.timestamp is in milliseconds)
-                const activityTime = activity.timestamp > 1e12 ? activity.timestamp : activity.timestamp * 1000;
+                const activityTime =
+                    activity.timestamp > 1e12 ? activity.timestamp : activity.timestamp * 1000;
                 if (activityTime < cutoffTimestamp) {
                     continue;
                 }
@@ -169,7 +170,9 @@ const fetchTradeData = async () => {
 
                 await newActivity.save();
                 if (!isFirstRun) {
-                    Logger.info(`New trade detected for ${address.slice(0, 6)}...${address.slice(-4)}`);
+                    Logger.info(
+                        `New trade detected for ${address.slice(0, 6)}...${address.slice(-4)}`
+                    );
                 }
             }
 

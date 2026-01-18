@@ -139,10 +139,7 @@ const recordPaperTrade = async (
 
     stats.totalTrades += 1;
     stats.totalVolumeTraded += simulatedSize;
-    stats.winRate =
-        stats.totalSells > 0
-            ? (stats.winningTrades / stats.totalSells) * 100
-            : 0;
+    stats.winRate = stats.totalSells > 0 ? (stats.winningTrades / stats.totalSells) * 100 : 0;
     stats.lastUpdateAt = now;
 
     await stats.save();
@@ -254,7 +251,9 @@ const postPaperOrder = async (
         } else {
             // Fall back to trader's execution price if order book unavailable
             // This can happen for resolved markets or markets with no liquidity
-            Logger.info(`[PAPER] Order book unavailable, using trader's price: $${trade.price.toFixed(4)}`);
+            Logger.info(
+                `[PAPER] Order book unavailable, using trader's price: $${trade.price.toFixed(4)}`
+            );
             executionPrice = trade.price;
             priceSource = 'trader price (order book unavailable)';
         }
@@ -337,9 +336,7 @@ const postPaperOrder = async (
 
         // Check minimum
         if (sellTokens < MIN_ORDER_SIZE_TOKENS) {
-            Logger.warning(
-                `[PAPER] Sell amount ${sellTokens.toFixed(2)} tokens below minimum`
-            );
+            Logger.warning(`[PAPER] Sell amount ${sellTokens.toFixed(2)} tokens below minimum`);
             await recordSkippedTrade(
                 trade,
                 userAddress,
@@ -373,7 +370,9 @@ const postPaperOrder = async (
             Logger.info(`[PAPER] Best bid: ${maxPriceBid.size} @ $${sellPrice.toFixed(4)}`);
         } else {
             // Fall back to trader's execution price if order book unavailable
-            Logger.info(`[PAPER] Order book unavailable, using trader's price: $${trade.price.toFixed(4)}`);
+            Logger.info(
+                `[PAPER] Order book unavailable, using trader's price: $${trade.price.toFixed(4)}`
+            );
             sellPrice = trade.price;
             sellPriceSource = 'trader price (order book unavailable)';
         }
@@ -400,9 +399,7 @@ const postPaperOrder = async (
 
         if (realizedPnl !== 0) {
             const pnlSign = realizedPnl >= 0 ? '+' : '';
-            Logger.info(
-                `[PAPER] Realized P&L: ${pnlSign}$${realizedPnl.toFixed(2)}`
-            );
+            Logger.info(`[PAPER] Realized P&L: ${pnlSign}$${realizedPnl.toFixed(2)}`);
         }
 
         // Mark original trade as processed
@@ -430,7 +427,9 @@ const postPaperOrder = async (
             mergePrice = parseFloat(maxPriceBid.price);
         } else {
             // Fall back to trader's price
-            Logger.info(`[PAPER] Order book unavailable for merge, using trader's price: $${trade.price.toFixed(4)}`);
+            Logger.info(
+                `[PAPER] Order book unavailable for merge, using trader's price: $${trade.price.toFixed(4)}`
+            );
             mergePrice = trade.price;
         }
 

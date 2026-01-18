@@ -134,11 +134,7 @@ const doPaperTrading = async (trades: TradeWithUser[]) => {
             transactionHash: trade.transactionHash,
         });
 
-        await postPaperOrder(
-            trade.side === 'BUY' ? 'buy' : 'sell',
-            trade,
-            trade.userAddress
-        );
+        await postPaperOrder(trade.side === 'BUY' ? 'buy' : 'sell', trade, trade.userAddress);
 
         Logger.separator();
     }
@@ -165,11 +161,7 @@ const doAggregatedPaperTrading = async (aggregatedTrades: AggregatedTrade[]) => 
             side: agg.side as 'BUY' | 'SELL',
         };
 
-        await postPaperOrder(
-            agg.side === 'BUY' ? 'buy' : 'sell',
-            syntheticTrade,
-            agg.userAddress
-        );
+        await postPaperOrder(agg.side === 'BUY' ? 'buy' : 'sell', syntheticTrade, agg.userAddress);
 
         Logger.separator();
     }

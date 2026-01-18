@@ -6,6 +6,7 @@ import tradeMonitor, { stopTradeMonitor } from './services/tradeMonitor';
 import paperTradeExecutor, { stopPaperTradeExecutor } from './services/paperTradeExecutor';
 import Logger from './utils/logger';
 import { performHealthCheck, logHealthCheck } from './utils/healthCheck';
+import { startTelegramBot, stopTelegramBot } from './services/telegramBot';
 
 const USER_ADDRESSES = ENV.USER_ADDRESSES;
 const PROXY_WALLET = ENV.PROXY_WALLET;
@@ -32,6 +33,9 @@ const gracefulShutdown = async (signal: string) => {
         } else {
             stopTradeExecutor();
         }
+
+        // Stop Telegram bot
+        await stopTelegramBot();
 
         // Give services time to finish current operations
         Logger.info('Waiting for services to finish current operations...');
@@ -78,10 +82,14 @@ export const main = async () => {
         };
 
         if (PAPER_TRADING_ENABLED) {
-            console.log(`\n${colors.magenta}===========================================${colors.reset}`);
+            console.log(
+                `\n${colors.magenta}===========================================${colors.reset}`
+            );
             console.log(`${colors.magenta}           PAPER TRADING MODE${colors.reset}`);
             console.log(`${colors.magenta}    No real trades will be executed${colors.reset}`);
-            console.log(`${colors.magenta}===========================================${colors.reset}\n`);
+            console.log(
+                `${colors.magenta}===========================================${colors.reset}\n`
+            );
         } else {
             console.log(`\n${colors.yellow}💡 First time running the bot?${colors.reset}`);
             console.log(`   Read the guide: ${colors.cyan}GETTING_STARTED.md${colors.reset}`);
@@ -91,9 +99,17 @@ export const main = async () => {
         await connectDB();
         Logger.startup(USER_ADDRESSES, PAPER_TRADING_ENABLED ? 'PAPER_TRADING' : PROXY_WALLET);
 
+        // Start Telegram bot if enabled
+        if (ENV.TELEGRAM_ENABLED) {
+            Logger.info('Starting Telegram bot...');
+            await startTelegramBot();
+        }
+
         if (PAPER_TRADING_ENABLED) {
             // Paper trading mode - no CLOB client needed
-            Logger.info('[PAPER] Skipping CLOB client initialization (not needed for paper trading)');
+            Logger.info(
+                '[PAPER] Skipping CLOB client initialization (not needed for paper trading)'
+            );
             Logger.separator();
 
             Logger.info('Starting trade monitor...');
