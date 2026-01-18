@@ -12,11 +12,7 @@
 import * as readline from 'readline';
 import connectDB, { closeDB } from '../config/db';
 import { ENV } from '../config/env';
-import {
-    PaperTrade,
-    PaperPosition,
-    PaperPortfolioStats,
-} from '../models/paperTrades';
+import { PaperTrade, PaperPosition, PaperPortfolioStats } from '../models/paperTrades';
 
 const PAPER_INITIAL_BALANCE = ENV.PAPER_INITIAL_BALANCE;
 
@@ -57,7 +53,9 @@ const main = async () => {
     const positionCount = await PaperPosition.countDocuments();
 
     if (!stats && tradeCount === 0 && positionCount === 0) {
-        console.log(`${colors.yellow}No paper trading data found. Nothing to reset.${colors.reset}\n`);
+        console.log(
+            `${colors.yellow}No paper trading data found. Nothing to reset.${colors.reset}\n`
+        );
         await closeDB();
         return;
     }
@@ -78,8 +76,12 @@ const main = async () => {
     console.log(`Open Positions:    ${positionCount}`);
     console.log('');
 
-    console.log(`${colors.red}${colors.bright}WARNING: This action cannot be undone!${colors.reset}`);
-    console.log(`${colors.yellow}All paper trading data will be permanently deleted.${colors.reset}\n`);
+    console.log(
+        `${colors.red}${colors.bright}WARNING: This action cannot be undone!${colors.reset}`
+    );
+    console.log(
+        `${colors.yellow}All paper trading data will be permanently deleted.${colors.reset}\n`
+    );
 
     const confirmed = await askConfirmation(
         `${colors.yellow}Are you sure you want to reset? (y/N): ${colors.reset}`
@@ -122,10 +124,16 @@ const main = async () => {
         startedAt: now,
         lastUpdateAt: now,
     });
-    console.log(`  Created fresh portfolio stats with $${PAPER_INITIAL_BALANCE.toFixed(2)} balance`);
+    console.log(
+        `  Created fresh portfolio stats with $${PAPER_INITIAL_BALANCE.toFixed(2)} balance`
+    );
 
-    console.log(`\n${colors.green}${colors.bright}Paper trading data has been reset!${colors.reset}`);
-    console.log(`\nYour new starting balance: ${colors.green}$${PAPER_INITIAL_BALANCE.toFixed(2)}${colors.reset}`);
+    console.log(
+        `\n${colors.green}${colors.bright}Paper trading data has been reset!${colors.reset}`
+    );
+    console.log(
+        `\nYour new starting balance: ${colors.green}$${PAPER_INITIAL_BALANCE.toFixed(2)}${colors.reset}`
+    );
     console.log(`\n${colors.magenta}===========================================${colors.reset}\n`);
 
     await closeDB();

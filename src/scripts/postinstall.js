@@ -18,13 +18,21 @@ const colors = {
     cyan: '\x1b[36m',
 };
 
-console.log(`\n${colors.cyan}${colors.bright}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${colors.reset}`);
-console.log(`${colors.cyan}${colors.bright}  ✅ Polymarket Copy Trading Bot - Installed!${colors.reset}`);
-console.log(`${colors.cyan}${colors.bright}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${colors.reset}\n`);
+console.log(
+    `\n${colors.cyan}${colors.bright}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${colors.reset}`
+);
+console.log(
+    `${colors.cyan}${colors.bright}  ✅ Polymarket Copy Trading Bot - Installed!${colors.reset}`
+);
+console.log(
+    `${colors.cyan}${colors.bright}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${colors.reset}\n`
+);
 
 console.log(`${colors.yellow}🚀 Quick Start (3 steps):${colors.reset}\n`);
 console.log(`   1. ${colors.green}npm run build${colors.reset}          # Compile the bot`);
-console.log(`   2. ${colors.green}npm run health-check${colors.reset}          # Verify configuration`);
+console.log(
+    `   2. ${colors.green}npm run health-check${colors.reset}          # Verify configuration`
+);
 console.log(`   3. ${colors.green}npm start${colors.reset}              # Start trading!\n`);
 
 console.log(`${colors.yellow}📖 First time user?${colors.reset}`);
@@ -36,5 +44,6 @@ console.log(`   Run: ${colors.green}npm run help${colors.reset} to see all avail
 console.log(`${colors.yellow}✅ Health check:${colors.reset}`);
 console.log(`   Run: ${colors.green}npm run health-check${colors.reset} to verify your setup\n`);
 
-console.log(`${colors.cyan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${colors.reset}\n`);
-
+console.log(
+    `${colors.cyan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${colors.reset}\n`
+);

@@ -12,11 +12,7 @@
 
 import connectDB, { closeDB } from '../config/db';
 import { ENV } from '../config/env';
-import {
-    PaperTrade,
-    PaperPosition,
-    PaperPortfolioStats,
-} from '../models/paperTrades';
+import { PaperTrade, PaperPosition, PaperPortfolioStats } from '../models/paperTrades';
 import axios from 'axios';
 
 const CLOB_HTTP_URL = ENV.CLOB_HTTP_URL;
@@ -110,15 +106,19 @@ const main = async () => {
     console.log(`Last Update:       ${colors.dim}${lastUpdate}${colors.reset}`);
     console.log('');
 
-    console.log(`Initial Balance:   ${colors.white}$${stats.initialBalance.toFixed(2)}${colors.reset}`);
-    console.log(`Current Balance:   ${colors.white}$${stats.currentBalance.toFixed(2)}${colors.reset}`);
+    console.log(
+        `Initial Balance:   ${colors.white}$${stats.initialBalance.toFixed(2)}${colors.reset}`
+    );
+    console.log(
+        `Current Balance:   ${colors.white}$${stats.currentBalance.toFixed(2)}${colors.reset}`
+    );
 
     // Get all open positions and update their current prices
     const positions = await PaperPosition.find({ size: { $gt: 0 } });
 
     let totalUnrealizedPnl = 0;
     const updatedPositions: Array<{
-        position: typeof positions[0];
+        position: (typeof positions)[0];
         currentPrice: number | null;
         unrealizedPnl: number;
     }> = [];
@@ -151,11 +151,15 @@ const main = async () => {
     const totalPnlPercent = (totalPnl / stats.initialBalance) * 100;
 
     console.log(`Positions Value:   ${colors.white}$${positionValue.toFixed(2)}${colors.reset}`);
-    console.log(`${colors.bright}Total Value:       $${totalPortfolioValue.toFixed(2)}${colors.reset}`);
+    console.log(
+        `${colors.bright}Total Value:       $${totalPortfolioValue.toFixed(2)}${colors.reset}`
+    );
     console.log('');
     console.log(`Realized P&L:      ${colorPnl(stats.totalRealizedPnl)}`);
     console.log(`Unrealized P&L:    ${colorPnl(totalUnrealizedPnl)}`);
-    console.log(`${colors.bright}Total P&L:         ${colorPnl(totalPnl)} (${colorPercent(totalPnlPercent)})${colors.reset}`);
+    console.log(
+        `${colors.bright}Total P&L:         ${colorPnl(totalPnl)} (${colorPercent(totalPnlPercent)})${colors.reset}`
+    );
     console.log('');
 
     // Display trading stats
@@ -173,18 +177,20 @@ const main = async () => {
 
     // Display open positions
     if (updatedPositions.length > 0) {
-        console.log(`${colors.cyan}${colors.bright}OPEN POSITIONS (${updatedPositions.length})${colors.reset}`);
+        console.log(
+            `${colors.cyan}${colors.bright}OPEN POSITIONS (${updatedPositions.length})${colors.reset}`
+        );
         console.log('─'.repeat(45));
 
         for (const { position, currentPrice, unrealizedPnl } of updatedPositions) {
             const price = currentPrice ?? position.currentPrice;
             const currentValue = position.size * price;
             const pnlPercent =
-                position.avgPrice > 0
-                    ? ((price - position.avgPrice) / position.avgPrice) * 100
-                    : 0;
+                position.avgPrice > 0 ? ((price - position.avgPrice) / position.avgPrice) * 100 : 0;
 
-            console.log(`\n${colors.white}${position.marketTitle || position.marketSlug || position.conditionId}${colors.reset}`);
+            console.log(
+                `\n${colors.white}${position.marketTitle || position.marketSlug || position.conditionId}${colors.reset}`
+            );
             console.log(`  Outcome: ${position.outcome || 'N/A'}`);
             console.log(`  Size: ${position.size.toFixed(2)} tokens`);
             console.log(`  Avg Entry: $${position.avgPrice.toFixed(4)}`);
@@ -218,7 +224,9 @@ const main = async () => {
             console.log(
                 `  Amount: $${trade.simulatedSize.toFixed(2)} (${trade.simulatedTokens.toFixed(2)} tokens @ $${trade.simulatedPrice.toFixed(4)})`
             );
-            console.log(`  Trader: $${trade.traderUsdcSize.toFixed(2)} @ $${trade.traderPrice.toFixed(4)}`);
+            console.log(
+                `  Trader: $${trade.traderUsdcSize.toFixed(2)} @ $${trade.traderPrice.toFixed(4)}`
+            );
         }
         console.log('');
     }

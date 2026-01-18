@@ -11,11 +11,7 @@ import * as readline from 'readline';
 import connectDB, { closeDB } from '../config/db';
 import { ENV } from '../config/env';
 import mongoose from 'mongoose';
-import {
-    PaperTrade,
-    PaperPosition,
-    PaperPortfolioStats,
-} from '../models/paperTrades';
+import { PaperTrade, PaperPosition, PaperPortfolioStats } from '../models/paperTrades';
 
 const USER_ADDRESSES = ENV.USER_ADDRESSES;
 const PAPER_INITIAL_BALANCE = ENV.PAPER_INITIAL_BALANCE;
@@ -59,7 +55,9 @@ const main = async () => {
     console.log('  - All trader activity history (for monitored traders)');
     console.log('  - All trader position history\n');
 
-    console.log(`${colors.red}${colors.bright}WARNING: This action cannot be undone!${colors.reset}\n`);
+    console.log(
+        `${colors.red}${colors.bright}WARNING: This action cannot be undone!${colors.reset}\n`
+    );
 
     const confirmed = await askConfirmation(
         `${colors.yellow}Are you sure you want to start fresh? (y/N): ${colors.reset}`
@@ -133,7 +131,9 @@ const main = async () => {
     });
 
     console.log(`\n${colors.green}${colors.bright}Fresh start complete!${colors.reset}`);
-    console.log(`\nYour starting balance: ${colors.green}$${PAPER_INITIAL_BALANCE.toFixed(2)}${colors.reset}`);
+    console.log(
+        `\nYour starting balance: ${colors.green}$${PAPER_INITIAL_BALANCE.toFixed(2)}${colors.reset}`
+    );
     console.log(`\n${colors.cyan}When you run 'npm run dev', the bot will:`);
     console.log(`  1. Fetch current trades and mark them as "already processed"`);
     console.log(`  2. Only execute paper trades for NEW trades after that${colors.reset}`);
